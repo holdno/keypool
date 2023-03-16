@@ -8,14 +8,14 @@ var (
 )
 
 // Pool 基本方法
-type Pool interface {
-	Get() (interface{}, error)
+type Pool[T any] interface {
+	Get(string) (*IdleConn[T], error)
 
-	Put(interface{}) error
+	Put(string, *IdleConn[T]) error
 
-	Close(interface{}) error
+	Close(string, *IdleConn[T]) error
 
 	Release()
 
-	Len() int
+	Len(string) int
 }
