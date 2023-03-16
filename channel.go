@@ -15,8 +15,6 @@ var (
 
 // Config 连接池相关配置
 type Config[T any] struct {
-	//连接池中拥有的最小连接数
-	InitialCap int
 	//最大并发存活连接数
 	MaxCap int
 	//最大空闲连接
@@ -63,7 +61,7 @@ var connectionRequestQueueSize = 1000000
 
 // NewChannelPool 初始化连接
 func NewChannelPool[T any](poolConfig *Config[T]) (Pool[T], error) {
-	if !(poolConfig.InitialCap <= poolConfig.MaxIdle && poolConfig.MaxCap >= poolConfig.MaxIdle && poolConfig.InitialCap >= 0) {
+	if poolConfig.MaxCap < poolConfig.MaxIdle {
 		return nil, errors.New("invalid capacity settings")
 	}
 	if poolConfig.Factory == nil {

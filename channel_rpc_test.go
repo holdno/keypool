@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	InitialCap = 3
 	MaxIdleCap = 10
 	MaximumCap = 100
 	network    = "tcp"
@@ -83,8 +82,7 @@ func TestPool_Get(t *testing.T) {
 	wg.Wait()
 
 	if p.Len(key) != 0 {
-		t.Errorf("Get error. Expecting %d, got %d",
-			(InitialCap - 1), p.Len(key))
+		t.Errorf("Get error. Expecting 0, got %d", p.Len(key))
 	}
 
 	_, err = p.Get(key)
@@ -96,7 +94,7 @@ func TestPool_Get(t *testing.T) {
 
 func TestPool_Put(t *testing.T) {
 	key := "test"
-	pconf := Config[*rpc.Client]{InitialCap: InitialCap, MaxCap: MaximumCap, Factory: factory, Close: closeFac, IdleTimeout: time.Second * 20,
+	pconf := Config[*rpc.Client]{MaxCap: MaximumCap, Factory: factory, Close: closeFac, IdleTimeout: time.Second * 20,
 		MaxIdle: MaxIdleCap}
 	p, err := NewChannelPool(&pconf)
 	if err != nil {
@@ -257,7 +255,7 @@ func TestPoolConcurrent2(t *testing.T) {
 //}
 
 func newChannelPool() (Pool[*rpc.Client], error) {
-	pconf := Config[*rpc.Client]{InitialCap: InitialCap, MaxCap: MaximumCap, Factory: factory, Close: closeFac, IdleTimeout: time.Second * 20,
+	pconf := Config[*rpc.Client]{MaxCap: MaximumCap, Factory: factory, Close: closeFac, IdleTimeout: time.Second * 20,
 		MaxIdle: MaxIdleCap}
 	return NewChannelPool(&pconf)
 }

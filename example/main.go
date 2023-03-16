@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/silenceper/pool"
+	pool "github.com/holdno/keypool"
 )
 
 const addr string = "127.0.0.1:8080"
@@ -33,13 +33,12 @@ func client() {
 	//close 关闭连接的方法
 	close := func(v net.Conn) error { return v.Close() }
 	key := "example"
-	//创建一个连接池： 初始化2，最大连接5，空闲连接数是4
+	//创建一个连接池：最大连接5，空闲连接数是4
 	poolConfig := &pool.Config[net.Conn]{
-		InitialCap: 2,
-		MaxIdle:    4,
-		MaxCap:     5,
-		Factory:    factory,
-		Close:      close,
+		MaxIdle: 4,
+		MaxCap:  5,
+		Factory: factory,
+		Close:   close,
 		//连接最大空闲时间，超过该时间的连接 将会关闭，可避免空闲时连接EOF，自动失效的问题
 		IdleTimeout: 15 * time.Second,
 	}
