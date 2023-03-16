@@ -1,4 +1,4 @@
-package pool
+package keypool
 
 import (
 	"math/rand"
