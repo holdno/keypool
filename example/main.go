@@ -28,13 +28,13 @@ func main() {
 func client() {
 
 	//factory 创建连接的方法
-	factory := func() (interface{}, error) { return net.Dial("tcp", addr) }
+	factory := func(key string) (net.Conn, error) { return net.Dial("tcp", addr) }
 
 	//close 关闭连接的方法
-	close := func(v interface{}) error { return v.(net.Conn).Close() }
-
+	close := func(v net.Conn) error { return v.Close() }
+	key := "example"
 	//创建一个连接池： 初始化2，最大连接5，空闲连接数是4
-	poolConfig := &pool.Config{
+	poolConfig := &pool.Config[net.Conn]{
 		InitialCap: 2,
 		MaxIdle:    4,
 		MaxCap:     5,
@@ -49,19 +49,19 @@ func client() {
 	}
 
 	//从连接池中取得一个连接
-	v, err := p.Get()
+	v, err := p.Get(key)
 
 	//do something
 	//conn=v.(net.Conn)
 
 	//将连接放回连接池中
-	p.Put(v)
+	p.Put(key, v)
 
 	//释放连接池中的所有连接
 	//p.Release()
 
 	//查看当前连接中的数量
-	current := p.Len()
+	current := p.Len(key)
 	fmt.Println("len=", current)
 }
 
