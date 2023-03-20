@@ -69,7 +69,7 @@ func (t *ttl[T]) loop() {
 	if t.idleTimeout == 0 {
 		return
 	}
-	timeTicker := time.NewTicker(time.Nanosecond * 10)
+	timeTicker := time.NewTicker(time.Second * 10)
 	var now time.Time
 	for {
 		select {
