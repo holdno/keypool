@@ -256,6 +256,10 @@ func (c *channelPool[T]) Get(key string) (*idleConn[T], error) {
 						continue
 					}
 				}
+
+				if !ret.idleConn.mu.TryLock() {
+					continue
+				}
 				return ret.idleConn, nil
 			}
 			if c.factory == nil {
