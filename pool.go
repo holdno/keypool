@@ -9,11 +9,11 @@ var (
 
 // Pool 基本方法
 type Pool[T any] interface {
-	Get(string) (*IdleConn[T], error)
+	Get(string) (*idleConn[T], error)
 
-	Put(string, *IdleConn[T]) error
+	Put(string, *idleConn[T]) error
 
-	Close(string, *IdleConn[T]) error
+	Close(string, *idleConn[T]) error
 
 	Release()
 

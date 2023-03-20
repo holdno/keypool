@@ -52,6 +52,48 @@ func TestPool_Get_Impl(t *testing.T) {
 	p.Put(key, conn)
 }
 
+func BenchmarkPoolGetPut(b *testing.B) {
+	p, _ := newChannelPool()
+	defer p.Release()
+	key := "test"
+	var (
+		conn [10]*idleConn[*rpc.Client]
+	)
+	for n := 0; n < b.N; n++ {
+		for i := 0; i < 10; i++ {
+			c, err := p.Get(key)
+			if err != nil {
+				b.Errorf("Get error: %s", err)
+			}
+			conn[i] = c
+		}
+
+		for i := 0; i < 10; i++ {
+			p.Put(key, conn[i])
+		}
+	}
+
+	//	goos: linux
+	//
+	// goarch: amd64
+	// pkg: github.com/holdno/keypool
+	// cpu: Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz
+	// BenchmarkPoolGetPut
+	// BenchmarkPoolGetPut-2   	 3598538	       309.6 ns/op	      52 B/op	       1 allocs/op
+
+// 	goos: linux
+// goarch: amd64
+// pkg: github.com/holdno/keypool
+// cpu: Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz
+// BenchmarkPoolGetPut
+// BenchmarkPoolGetPut-2
+//   190255	     13700 ns/op	     566 B/op	      10 allocs/op
+// PASS
+// ok  	github.com/holdno/keypool	3.013s
+
+// BenchmarkPoolGetPut-2   	     433	   2522522 ns/op	   38360 B/op	      12 allocs/op
+}
+
 func TestPool_Get(t *testing.T) {
 	p, _ := newChannelPool()
 	defer p.Release()
@@ -103,7 +145,7 @@ func TestPool_Put(t *testing.T) {
 	defer p.Release()
 
 	// get/create from the pool
-	conns := make([]*IdleConn[*rpc.Client], MaximumCap)
+	conns := make([]*idleConn[*rpc.Client], MaximumCap)
 	for i := 0; i < MaximumCap; i++ {
 		conn, _ := p.Get(key)
 		conns[i] = conn
@@ -162,7 +204,7 @@ func TestPool_Close(t *testing.T) {
 
 func TestPoolConcurrent(t *testing.T) {
 	p, _ := newChannelPool()
-	pipe := make(chan *IdleConn[*rpc.Client], 0)
+	pipe := make(chan *idleConn[*rpc.Client], 0)
 
 	go func() {
 		p.Release()

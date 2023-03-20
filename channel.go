@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 	//"reflect"
 )
 
@@ -30,13 +32,13 @@ type Config[T any] struct {
 }
 
 type connReq[T any] struct {
-	idleConn *IdleConn[T]
+	idleConn *idleConn[T]
 }
 
 // channelPool 存放连接信息
 type channelPool[T any] struct {
 	mu                       sync.RWMutex
-	conns                    map[string]chan *IdleConn[T]
+	conns                    map[string]chan *idleConn[T]
 	factory                  func(key string) (T, error)
 	close                    func(T) error
 	ping                     func(T) error
@@ -46,14 +48,78 @@ type channelPool[T any] struct {
 	openingConns             int
 	connReqs                 map[string][]chan connReq[T]
 	openerCh                 chan string
+
+	ttl *ttl[T]
 }
 
-type IdleConn[T any] struct {
+type ttl[T any] struct {
+	close       func(T) error
+	idleTimeout time.Duration
+	index       map[[16]byte]*idleConn[T]
+	mu          sync.RWMutex
+}
+
+func (t *ttl[T]) add(conn *idleConn[T]) {
+	t.mu.Lock()
+	t.index[conn.id] = conn
+	t.mu.Unlock()
+}
+
+func (t *ttl[T]) loop() {
+	if t.idleTimeout == 0 {
+		return
+	}
+	timeTicker := time.NewTicker(time.Nanosecond * 10)
+	var now time.Time
+	for {
+		select {
+		case <-timeTicker.C:
+			now = time.Now()
+			t.mu.Lock()
+			for k, v := range t.index {
+				if now.Sub(v.lt) > t.idleTimeout {
+					if v.mu.TryLock() {
+						t.close(v.Conn())
+						delete(t.index, k)
+						v.mu.Unlock()
+					}
+				}
+			}
+			t.mu.Unlock()
+		}
+	}
+}
+
+func (c *channelPool[T]) genNewConn(key string) (*idleConn[T], error) {
+	conn, err := c.factory(key)
+	if err != nil {
+		return nil, err
+	}
+
+	ic := &idleConn[T]{
+		id:   ulid.Make(),
+		conn: conn,
+		t:    time.Now(),
+		lt:   time.Now(),
+	}
+
+	return ic, nil
+}
+
+type idleConn[T any] struct {
+	id   [16]byte
 	conn T
 	t    time.Time
+	lt   time.Time
+	mu   sync.Mutex
 }
 
-func (i *IdleConn[T]) Conn() T {
+// const (
+// 	CONN_STATUS_IDLE int32 = iota
+// 	CONN_STATUS_BUSY
+// )
+
+func (i *idleConn[T]) Conn() T {
 	return i.conn
 }
 
@@ -72,7 +138,7 @@ func NewChannelPool[T any](poolConfig *Config[T]) (Pool[T], error) {
 	}
 
 	c := &channelPool[T]{
-		conns:        make(map[string]chan *IdleConn[T]),
+		conns:        make(map[string]chan *idleConn[T]),
 		factory:      poolConfig.Factory,
 		close:        poolConfig.Close,
 		idleTimeout:  poolConfig.IdleTimeout,
@@ -80,6 +146,11 @@ func NewChannelPool[T any](poolConfig *Config[T]) (Pool[T], error) {
 		maxIdle:      poolConfig.MaxIdle,
 		openingConns: 0,
 		openerCh:     make(chan string, connectionRequestQueueSize),
+		ttl: &ttl[T]{
+			idleTimeout: poolConfig.IdleTimeout,
+			index:       make(map[[16]byte]*idleConn[T]),
+			close:       poolConfig.Close,
+		},
 	}
 
 	if poolConfig.Ping != nil {
@@ -87,24 +158,16 @@ func NewChannelPool[T any](poolConfig *Config[T]) (Pool[T], error) {
 	}
 
 	go c.connectionOpener()
-
-	// for i := 0; i < poolConfig.InitialCap; i++ {
-	// 	conn, err := c.factory()
-	// 	if err != nil {
-	// 		c.Release()
-	// 		return nil, fmt.Errorf("factory is not able to fill the pool: %s", err)
-	// 	}
-	// 	c.conns <- &idleConn{conn: conn, t: time.Now()}
-	// }
+	go c.ttl.loop()
 
 	return c, nil
 }
 
 // getConns 获取所有连接
-func (c *channelPool[T]) getConns(key string) chan *IdleConn[T] {
+func (c *channelPool[T]) getConns(key string) chan *idleConn[T] {
 	c.mu.Lock()
 	if _, exist := c.conns[key]; !exist {
-		c.conns[key] = make(chan *IdleConn[T], c.maxIdle)
+		c.conns[key] = make(chan *idleConn[T], c.maxIdle)
 	}
 	if _, exist := c.connReqs[key]; !exist {
 		c.connReqs = make(map[string][]chan connReq[T])
@@ -129,7 +192,7 @@ func (c *channelPool[T]) connectionOpener() {
 
 // openNewConnection Open one new connection
 func (c *channelPool[T]) openNewConnection(key string) {
-	conn, err := c.factory(key)
+	conn, err := c.genNewConn(key)
 	if err != nil {
 		c.mu.Lock()
 		c.openingConns--
@@ -141,14 +204,11 @@ func (c *channelPool[T]) openNewConnection(key string) {
 		return
 	}
 
-	c.Put(key, &IdleConn[T]{
-		conn: conn,
-		t:    time.Now(),
-	})
+	c.Put(key, conn)
 }
 
 // Get 从pool中取一个连接
-func (c *channelPool[T]) Get(key string) (*IdleConn[T], error) {
+func (c *channelPool[T]) Get(key string) (*idleConn[T], error) {
 	conns := c.getConns(key)
 	if conns == nil {
 		return nil, ErrClosed
@@ -159,13 +219,9 @@ func (c *channelPool[T]) Get(key string) (*IdleConn[T], error) {
 			if wrapConn == nil {
 				return nil, ErrClosed
 			}
-			//判断是否超时，超时则丢弃
-			if timeout := c.idleTimeout; timeout > 0 {
-				if wrapConn.t.Add(timeout).Before(time.Now()) {
-					//丢弃并关闭该连接
-					c.Close(key, wrapConn)
-					continue
-				}
+
+			if !wrapConn.mu.TryLock() {
+				continue
 			}
 			//判断是否失效，失效则丢弃，如果用户没有设定 ping 方法，就不检查
 			if c.ping != nil {
@@ -181,7 +237,8 @@ func (c *channelPool[T]) Get(key string) (*IdleConn[T], error) {
 				req := make(chan connReq[T], 1)
 				c.connReqs[key] = append(c.connReqs[key], req)
 				c.mu.Unlock()
-				ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+				defer cancel()
 				var ret connReq[T]
 				select {
 				case <-ctx.Done():
@@ -192,8 +249,8 @@ func (c *channelPool[T]) Get(key string) (*IdleConn[T], error) {
 				if ret.idleConn == nil {
 					return nil, errors.New("failed to create a new connection")
 				}
-				if timeout := c.idleTimeout; timeout > 0 {
-					if ret.idleConn.t.Add(timeout).Before(time.Now()) {
+				if c.idleTimeout > 0 {
+					if ret.idleConn.lt.Add(c.idleTimeout).Before(time.Now()) {
 						//丢弃并关闭该连接
 						c.Close(key, ret.idleConn)
 						continue
@@ -209,28 +266,32 @@ func (c *channelPool[T]) Get(key string) (*IdleConn[T], error) {
 			// c.factory 耗时较长，采用乐观策略，先增加，失败后再减少
 			c.openingConns++
 			c.mu.Unlock()
-			conn, err := c.factory(key)
+			conn, err := c.genNewConn(key)
 			if err != nil {
 				c.mu.Lock()
 				c.openingConns--
 				c.mu.Unlock()
 				return nil, err
 			}
-			return &IdleConn[T]{
-				conn: conn,
-				t:    time.Now(),
-			}, nil
+			if !conn.mu.TryLock() {
+				continue
+			}
+			return conn, nil
 		}
 	}
 }
 
 // Put 将连接放回pool中
-func (c *channelPool[T]) Put(key string, conn *IdleConn[T]) error {
+func (c *channelPool[T]) Put(key string, conn *idleConn[T]) error {
 	c.mu.Lock()
 	if c.conns == nil && conn != nil {
 		c.mu.Unlock()
 		return c.Close(key, conn)
 	}
+
+	conn.lt = time.Now()
+	conn.mu.Unlock()
+	c.ttl.add(conn)
 
 	if l := len(c.connReqs[key]); l > 0 {
 		req := c.connReqs[key][0]
@@ -281,7 +342,7 @@ func (c *channelPool[T]) maybeOpenNewConnections(key string) {
 }
 
 // Close 关闭单条连接
-func (c *channelPool[T]) Close(key string, conn *IdleConn[T]) error {
+func (c *channelPool[T]) Close(key string, conn *idleConn[T]) error {
 	if conn == nil {
 		return errors.New("connection is nil. rejecting")
 	}
@@ -308,7 +369,7 @@ func (c *channelPool[T]) Ping(conn T) error {
 func (c *channelPool[T]) Release() {
 	c.mu.Lock()
 	conns := c.conns
-	c.conns = make(map[string]chan *IdleConn[T])
+	c.conns = make(map[string]chan *idleConn[T])
 	c.factory = nil
 	c.ping = nil
 	closeFun := c.close
@@ -326,7 +387,9 @@ func (c *channelPool[T]) Release() {
 		close(v)
 	}
 
-	close(openerCh)
+	if openerCh != nil {
+		close(openerCh)
+	}
 
 	for _, connsChan := range conns {
 		//log.Printf("Type %v\n",reflect.TypeOf(wrapConn.conn))
